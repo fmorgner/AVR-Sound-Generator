@@ -21,7 +21,10 @@ abFSIdx: .Byte 12       ; wave sample indices, each element points to a sample i
 .def ZL         = r30   ; Z low byte
 .def ZH         = r31   ; Z high byte
 
+.equ nTonesMax  = 9     ; we assume to be albe to play 9 tones in parallel
+
 ; names for the registers to help humans to understand
+.def nTones     = r14   ; counter to count tones played in parallel
 .def nWaveLen   = r15   ; the length in bytes of a wave
 .def nNULL      = r16   ; a NULL - needed in 'reg > 15' because of the CPU 
 .def rTemp      = r17   ; a temporary register
@@ -150,6 +153,11 @@ abFSIdx: .Byte 12       ; wave sample indices, each element points to a sample i
             clr     nSampleL                        ; [1] clear sum of sample values before start of any
             clr     nSampleH                        ; [1] other action for summing up the a samples sum
 
+; initialize counter for parallel tones
+
+            ldi     rTemp, nTonesMax                ; [1] initialize counter for parallel active tones
+            mov     nTones, rTemp                   ; [1] with amount of maximum parallel playable tones
+
 ; --------------------------------------------------
 ; initial address calculation
 ; --------------------------------------------------
@@ -182,17 +190,20 @@ abFSIdx: .Byte 12       ; wave sample indices, each element points to a sample i
             sbrc    mInputBit,  0x06                ; [1,2] the last bit we are allowed to start a run
             rjmp    isr_end                         ; [2] all bits tested, end of ISR
 
-; if key pressed, add sample
+; call sample index
 
             ld      nSmpIx,     Y                   ; [1] abFSIdx[n] => register nSmpIx
-            in      mInputVal,  PINC                ; [1] get input signals
-            and     mInputVal,  mInputBit           ; [1] check if current bit is ON
-            breq    run                             ; [1,2] a bit is 0, so we have to make a run for it
 
 ; if wave not finalized, play it anyway
 
             tst     nSmpIx                          ; [1]
             breq    run                             ; [1,2]
+
+; if key pressed, add sample
+
+            in      mInputVal,  PINC                ; [1] get input signals
+            and     mInputVal,  mInputBit           ; [1] check if current bit is ON
+            breq    run                             ; [1,2] a bit is 0, so we have to make a run for it
 
     next_wave:
 
@@ -241,6 +252,11 @@ abFSIdx: .Byte 12       ; wave sample indices, each element points to a sample i
 
             add     nSampleL,   rTemp               ; [1] accumulate all samples of all runs 
             adc     nSampleH,   nNULL               ; [1]
+
+; check if maximum parallel tones are already reached
+
+            dec     nTones                          ; [1] one tone added
+            breq    isr_end                         ; [1,2] if maximum reached, we are done
 
 ; test if all keys were checked
 
