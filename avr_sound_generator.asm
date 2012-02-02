@@ -5,193 +5,306 @@
 .DEVICE atmega328p
 
 .dseg
-abFSIdx: .Byte 12 ; frequency sample indices, each element points to a sample of a specific frequency
+abFSIdx: .Byte 12                       ; wave sample indices, each element points to a sample inside a different wave
 
 .cseg
-.org 0
 
-.def YL = r28
-.def YH = r29
-.def ZL = r30
-.def ZH = r31
+.org    0x0000
+        rjmp    setup                   ; 'setup' als Start-Routine registrieren
+        
+.org    OVF0addr
+        rjmp    isr_timer0              ; 't0over' als Timer0 Overflow-Routine registrieren
 
-.def nNULL	= r16
-.def ZLsave	= r17
-.def ZHsave	= r18
-.def nSmpIx	= r19
-.def nSmpVe	= r20
-.def nBits	= r21
-.def mOut	= r22
-.def rTest	= r23
+; these should have be known in the environment, gavrasm doesn't know them
+.def YL         = r28
+.def YH         = r29
+.def ZL         = r30
+.def ZH         = r31
 
-	setup:
+; names for the registers to help humans to understand
+.def nOne       = r1
+.def nNULL      = r16
+.def ZLsave     = r17
+.def ZHsave     = r18
+.def nSmpIx     = r19
+.def nSmpVe     = r20
+.def nBits      = r21   ; same as nBitsL for SW-DAC
+.def nBitsL     = r21
+.def nBitsH     = r22
+.def mOut       = r23
+.def rTemp      = r24
+.def cNextWave  = r25   ; ! special register
+.def mInputVal  = r26   ; ! special register 
+.def mInputBit  = r27   ; ! special register X
+
+;  A	    440.00 Hz
+;  B	    466.16 Hz
+;  H	    493.88 Hz
+;  C	*   523.25 Hz
+;CIS	*   554.37 Hz
+;  D	*   587.33 Hz
+;DIS	*   622.25 Hz
+;  E	*   659.26 Hz
+;  F	*   698.46 Hz
+;FIS	*   739.99 Hz
+;  G	*   783.99 Hz
+;GIS	*   830.61 Hz
+;  A	*   880.00 Hz
+;  B	*   932.33 Hz
+;  H	*   987.77 Hz
+;  C	   1046.50 Hz
+;CIS	   1108.73 Hz
+;  D	   1174.66 Hz
+
+; 2 bytes timing, has to be adjusted to 64*'C' = 33488 Hz
+.equ    TPBH    = 0xfc                              ; High Byte des Timer Presets
+.equ    TPBL    = 0x48			                    ; Low  Byte des Timer Presets
+
+; ones per program start
+    setup:
+    
+; setup interrupt generation
+
+            cli                                     ; do not generate interrupts while setup phase
+
+            ldi     rTemp,      LOW (RAMEND)        ; Stackpointer initialisieren
+            out     SPL,        rTemp               ; -- " --
+            ldi     rTemp,      HIGH(RAMEND)        ; -- " --
+            out     SPH,        rTemp               ; -- " --
+
+            ldi     rTemp,      0x00                ; set time1 to "no waveform generation & no compare match interrupt"
+            sts     TCCR1A,     rTemp               ; -- " --
+            ldi     rTemp,      0x01                ; set timer1 prescaler to 1
+            sts     TCCR1B,     rTemp               ; -- " --
+
+            ldi     rTemp,      0x02                ; set time1 to overflow interrupt timer
+            sts     TIMSK1,     rTemp               ; -- " --
+
+            ldi     rTemp,      TPBH                ; adjust timer for next interrupt
+            sts     TCNT1H,     rTemp               ; -- " --
+            ldi     rTemp,      TPBL                ; -- " --
+            sts     TCNT1L,     rTemp               ; -- " --
+
+; PORT definition
+
+            ldi     r16,        0x00                ; r16 to input mode for pin 8 t0 13
+            ldi     r17,        0xFF                ; pin 0 to 5 / 8 to 13
+            ldi     r18,        0xFF                ; all pins
+
+; define PORTB as input
+
+            out     DDRC,       r16                 ; all pins to input 
+            out     PORTC,      r17                 ; pin 8 to 13 to pullup
 
 ; define PORTD as output
 
-		ldi	r16,	0xff
-		out	DDRD,	r16
-		out	PORTD,	r16
+            out     DDRD,       r18                 ; all pins to output
 
-	init:
+; from here on we will use register alias names as far as possible
 
 ; initialize a register with NULL for later use
 
-		eor	nNULL,	nNULL			; we need a NULL in a register :-(
+            eor     nNULL,      nNULL               ; we need a NULL in a register :-(
+            eor     nOne,       nOne                ; we need a 1 too :-((
+            inc     nOne                            ; no ldi with r1 :-(((
 
 ; initialize all Frequency-Sample-Indices with "0"
 
-		ldi 	YL,	low (abFSIdx*2)		; index of sample in wave
-		ldi 	YH,	high(abFSIdx*2)
+            ldi     YL,         low (abFSIdx*2)     ; list of indeces of next sample in wave
+            ldi     YH,         high(abFSIdx*2)     ;   -- " --
 
-		ldi	r0,	11
-	FSIdx:	st	Y,	nNULL			; 0 => anPosFrequencies[n]
-		adiw	YL,	2
-		dec	r0
-		brne	FSIdx
-	loop:
+            ldi     r17,        0x02                ; the next address lies "2" further on
+            ldi     r18,        0x0C                ; 12 Tunes
+    FSIdx:
+            st      Y,          nNULL               ; 0 => anPosFrequencies[n]
+            add     YL,         r17                 ; next address
+            adc     YH,         nNULL               ;   -- " --
+            dec     r18                             ; one done
+            brne    FSIdx                           ; more to do?
 
-; sample index into the wave to Y
+            sei                                     ; setup is ended, allow generation of interrupts
 
-		ldi 	YL,	low (abFSIdx*2)		; index of sample in wave
-		ldi 	YH,	high(abFSIdx*2)		;   -- " --
-		ld	nSmpIx,	Y			; anPosFrequencies[0] => r17
+    wait:
+            rjmp wait                               ; wait for ever, interrupt is called as configured
 
-; start pointer of the wave to Z
+; START OF THE INTERRUPT SERVICE ROUTINE
 
-		ldi	ZL,	low (abWaveC*2)		; address of the wave matrix to Z
-		ldi	ZH,	high(abWaveC*2)		;   -- " --
-		mov	ZLsave,	ZL			; sometimes we need the startpoint again later on
-		mov	ZHsave,	ZH			;   -- " --
+    isr_timer0:
+    read_start:
+            ldi     rTemp,      TPBH                ; adjust timer for next interrupt
+            sts     TCNT1H,     rTemp               ; -- " --
+            ldi     rTemp,      TPBL                ; -- " --
+            sts     TCNT1L,     rTemp               ; -- " --
+
+
+; list of sample indices into the wave to Y
+
+            ldi     YL,         low (abFSIdx*2)     ; load Y to point to the start of frequence sample index array "C"
+            ldi     YH,         high(abFSIdx*2)     ;   -- " --
+
+; start pointer of the wave to Z and to copy registers
+
+            ldi     ZL,         low (abWaveSet*2)   ; load Z to point to start of 2D wave matrix
+            ldi     ZH,         high(abWaveSet*2)   ;   -- " --
+            mov     ZLsave,     ZL                  ; sometimes we need the startpoint again later on
+            mov     ZHsave,     ZH                  ;   -- " --
+
+; reset output value (sample sum)
+
+            eor     nBitsL,     nBitsL
+            eor     nBitsH,     nBitsH
+
+; start on input pin 0
+
+            ldi     mInputBit,  0x01                ; starting the big loop
+            ror     mInputBit                       ; set carry flag
+
+; here all things are starting
+
+; read in the situation
+
+    read:
+            rol     mInputBit                       ; the first bit loures in the carry flag
+            sbrc    mInputBit,  0x06                ; the last bit we are allowed to start a run
+            rjmp    dac
+
+            in      mInputVal,  PINC                ; check whats ON
+            and     mInputVal,  mInputBit
+            breq    run                             ; a bit is 0, so we have to act
+
+            add     YL,         nOne                ; the next element of the frequence vector
+            adc     YH,         nNULL
+
+            ldi     rTemp,      64
+            add     ZLsave,     rTemp               ; the next wave
+            adc     ZHsave,     nNULL
+            add     ZLsave,     rTemp
+            adc     ZHsave,     nNULL
+
+            rjmp    read                            ; check the next pin/key
+
+; here we produce a sound wave
+
+    run:
+            mov     ZL,         ZLsave              ; sometimes we need the start again later on
+            mov     ZH,         ZHsave              ;   -- " --
 
 ; add index of the next sample to wave pointer
 
-		add	ZL,	nSmpIx			; &abWaveSet[abFSIdx[0]]  (X)
-		adc	ZH,	nNULL			;   -- " --
-		add	ZL,	nSmpIx			;   -- " --
-		adc	ZH,	nNULL			;   -- " --
+            ld      nSmpIx,     Y                   ; anPosFrequencies[0] => register nSmpIx
+            add     ZL,         nSmpIx              ; add nSmpIx to wave pointer &abWaveSet[abFSIdx[n]]
+            adc     ZH,         nNULL
+            add     ZL,         nSmpIx              ;   -- " --
+            adc     ZH,         nNULL
 
 ; get and check the next sample
 
-	strt1:
-		lpm					; load [Z] to r0
-		tst	r0				; set the flag
-		brne	next1				; if not 0, we are done with reading
+    strt1:
+            lpm                                     ; load [Z] to r0
+            tst     r0                              ; set the flag regarding to the content
+            brne    next1                           ; if not 0, we are done with reading
 
 ; end of wave, restart the wave
 
-		mov	ZL,	ZLsave			; reset Z to start of vector to restart the wave
-		mov	ZH,	ZHsave			;   -- " --
-		mov	nSmpIx,	nNULL			; the sample pointer becomes 0 too
-		rjmp	strt1				; now get the correct value
+            mov     ZL,         ZLsave              ; reset Z to start of current wave to restart the wave
+            mov     ZH,         ZHsave              ;   -- " --
+            mov     nSmpIx,     nNULL               ; the sample pointer becomes 0 too
+            rjmp    next2                           ; decrement to prevent increment to modify shift ones to many
+
+            eor     r0,         r0                  ; the assumed sample value is 2 - the average end value
+            inc     r0
+            inc     r0
 
 ; output sample value
 
-	next1:
-		inc	nSmpIx				; next time the next sample
-		st	Y,	nSmpIx			; write back to abFSIdx
+    next1:
+            inc     nSmpIx                          ; next time the next sample
+    next2:
+            st      Y,          nSmpIx              ; write back to abFSIdx
+
+ ;           lsr     r0
+            add     nBitsL,     r0                  ; accumulate all samples of all runs 
+            adc     nBitsH,     nNULL
+            sbrs    mInputBit,  0x05                ; the last bit we are allowed to
+            rjmp    read
 
 
-; D to A converter [ geprueft! ]
-
-		mov	nBits,	r0			; the sample value from lpm (lbl:strt1)
+; D to A converter
 
 ; divide by 32 to scale down into a 0 to 6 range (38 would be better)
 
-		lsr	nBits
-		lsr	nBits
-		lsr	nBits
-		lsr	nBits
-		lsr	nBits
+    dac:                                            ; Digital to Analog converter
+    
+            lsr     nBitsL                          ; divide two bytes by two
+            sbrc    nBitsH,     0                   ;   -- " --
+            ori     nBitsL,     0x80                ;   -- " --
+            lsr     nBitsH                          ;   -- " --
 
-	dac:						; Digital to Analog converter
-		eor	mOut,	mOut			; initialize output byte
+            lsr     nBitsL
+            sbrc    nBitsH,     0
+            ori     nBitsL,     0x80
+            lsr     nBitsH
+
+            lsr     nBitsL
+            sbrc    nBitsH,     0
+            ori     nBitsL,     0x80
+            lsr     nBitsH
+
+            lsr     nBitsL
+            sbrc    nBitsH,     0
+            ori     nBitsL,     0x80
+            lsr     nBitsH
+
+            lsr     nBitsL
+            sbrc    nBitsH,     0
+            ori     nBitsL,     0x80
+            lsr     nBitsH
+
+            lsr     nBits                           ; divide one byte by two
+;            lsr     nBits
+
+            eor     mOut,       mOut                ; initialize output byte
 
 ; cummulate bits
 
-		inc	nBits				; prepair nBits
-	for:	dec	nBits				; loop for bits to set
-		breq	end				; break if no bits to set anymore
+            inc     nBits                           ; prepair nBits
+    for:    
+            dec     nBits                           ; loop for bits to set
+            breq    end                             ; break if no bits to set anymore
 
-		lsl	mOut				; shift existing bits
-		ori	mOut,	0x04			; insert bit 2
-		rjmp	for				; loop to-for
+            lsl     mOut                            ; shift existing bits
+            ori     mOut,       0x04                ; insert bit 2
+            rjmp    for                             ; loop to-for
 
-	end:						; output result
-		out	PORTD,	mOut			; 
+    end:                                            ; output result
+            out     PORTD,      mOut                ; 
 
-		jmp	loop				; next sample
+            reti
 
 
 abWaveSet:
-;==================================================================================================================================================================================================
-abWaveC:
-.db 128,132,136,140,144,148,152,156,161,165,169,172,176,180,184,188,191,195,198,202,205,208,212,215,218,221,223,226,229,231,233,236,238,240,242,243,245,247,248,249,250,251,252,253,254,254,254,254
-.db 254,254,254,254,253,253,252,251,250,249,247,246,244,243,241,239,237,235,232,230,227,225,222,219,216,213,210,207,203,200,197,193,189,186,182,178,174,171,167,163,159,154,150,146,142,138,134,130
-.db 125,121,117,113,109,105,101, 96, 92, 88, 84, 81, 77, 73, 69, 66, 62, 58, 55, 52, 48, 45, 42, 39, 36, 33, 30, 28, 25, 23, 20, 18, 16, 14, 12, 11,  9,  8,  6,  5,  4,  3,  2,  2,  1,  1,  1,  1
-.db   1,  1,  1,  1,  2,  3,  4,  5,  6,  7,  8, 10, 12, 13, 15, 17, 19, 22, 24, 26, 29, 32, 34, 37, 40, 43, 47, 50, 53, 57, 60, 64, 67, 71, 75, 79, 83, 86, 90, 94, 99,103,107,111,115,119,123,  0
-;==================================================================================================================================================================================================
-abWaveCIS:
-.db 128,132,136,141,145,150,154,158,163,167,171,175,179,183,187,191,195,199,202,206,209,212,216,219,222,225,228,230,233,235,237,240,242,244,245,247,248,250,251,252,253,253,254,254,254,254,254,254
-.db 254,253,253,252,251,250,248,247,245,244,242,240,237,235,233,230,228,225,222,219,216,212,209,206,202,199,195,191,187,183,179,175,171,167,163,158,154,150,145,141,136,132,128,123,119,114,110,105
-.db 101, 97, 92, 88, 84, 80, 76, 72, 68, 64, 60, 56, 53, 49, 46, 43, 39, 36, 33, 30, 27, 25, 22, 20, 18, 15, 13, 11, 10,  8,  7,  5,  4,  3,  2,  2,  1,  1,  1,  1,  1,  1,  1,  2,  2,  3,  4,  5
-.db   7,  8, 10, 11, 13, 15, 18, 20, 22, 25, 27, 30, 33, 36, 39, 43, 46, 49, 53, 56, 60, 64, 68, 72, 76, 80, 84, 88, 92, 97,101,105,110,114,119,123,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0
-;==================================================================================================================================================================================================
-abWaveD:
-.db 128,132,137,142,146,151,155,160,165,169,173,178,182,186,190,194,198,202,206,210,213,216,220,223,226,229,232,234,237,239,241,243,245,247,248,250,251,252,253,253,254,254,254,254,254,254,253,253
-.db 252,251,250,248,247,245,243,241,239,237,234,232,229,226,223,220,216,213,210,206,202,198,194,190,186,182,178,173,169,165,160,155,151,146,142,137,132,128,123,118,113,109,104,100, 95, 90, 86, 82
-.db  77, 73, 69, 65, 61, 57, 53, 49, 45, 42, 39, 35, 32, 29, 26, 23, 21, 18, 16, 14, 12, 10,  8,  7,  5,  4,  3,  2,  2,  1,  1,  1,  1,  1,  1,  2,  2,  3,  4,  5,  7,  8, 10, 12, 14, 16, 18, 21
-.db  23, 26, 29, 32, 35, 39, 42, 45, 49, 53, 57, 61, 65, 69, 73, 77, 82, 86, 90, 95,100,104,109,113,118,123,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0
-;==================================================================================================================================================================================================
-abWaveDIS:
-.db 128,132,137,142,147,152,157,162,167,171,176,181,185,190,194,198,202,206,210,214,217,221,224,227,230,233,236,238,241,243,245,247,248,250,251,252,253,254,254,254,254,254,254,254,253,252,251,250
-.db 248,247,245,243,241,238,236,233,230,227,224,221,217,214,210,206,202,198,194,190,185,181,176,171,167,162,157,152,147,142,137,132,128,123,118,113,108,103, 98, 93, 88, 84, 79, 74, 70, 65, 61, 57
-.db  53, 49, 45, 41, 38, 34, 31, 28, 25, 22, 19, 17, 14, 12, 10,  8,  7,  5,  4,  3,  2,  1,  1,  1,  1,  1,  1,  1,  2,  3,  4,  5,  7,  8, 10, 12, 14, 17, 19, 22, 25, 28, 31, 34, 38, 41, 45, 49
-.db  53, 57, 61, 65, 70, 74, 79, 84, 88, 93, 98,103,108,113,118,123,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0
-;==================================================================================================================================================================================================
-abWaveE:
-.db 128,133,138,143,149,154,159,164,169,174,179,184,188,193,197,202,206,210,214,218,221,225,228,231,234,237,240,242,244,246,248,250,251,252,253,254,254,254,254,254,254,253,253,251,250,249,247,245
-.db 243,241,238,236,233,230,227,223,220,216,212,208,204,200,195,191,186,181,176,171,166,161,156,151,146,141,135,130,125,120,114,109,104, 99, 94, 89, 84, 79, 74, 69, 64, 60, 55, 51, 47, 43, 39, 35
-.db  32, 28, 25, 22, 19, 17, 14, 12, 10,  8,  6,  5,  4,  2,  2,  1,  1,  1,  1,  1,  1,  2,  3,  4,  5,  7,  9, 11, 13, 15, 18, 21, 24, 27, 30, 34, 37, 41, 45, 49, 53, 58, 62, 67, 71, 76, 81, 86
-.db  91, 96,101,106,112,117,122,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0
-;==================================================================================================================================================================================================
-abWaveF:
-.db 128,133,139,144,150,155,161,166,171,176,182,187,191,196,201,205,210,214,218,222,225,229,232,235,238,241,243,245,247,249,250,252,253,254,254,254,254,254,254,253,252,251,250,248,246,244,242,239
-.db 237,234,230,227,223,220,216,212,207,203,198,194,189,184,179,174,169,163,158,152,147,141,136,130,125,119,114,108,103, 97, 92, 86, 81, 76, 71, 66, 61, 57, 52, 48, 43, 39, 35, 32, 28, 25, 21, 18
-.db  16, 13, 11,  9,  7,  5,  4,  3,  2,  1,  1,  1,  1,  1,  1,  2,  3,  5,  6,  8, 10, 12, 14, 17, 20, 23, 26, 30, 33, 37, 41, 45, 50, 54, 59, 64, 68, 73, 79, 84, 89, 94,100,105,111,116,122,  0
-.db   0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0
-;==================================================================================================================================================================================================
-abWaveFIS:
-.db 128,133,139,145,151,157,163,168,174,179,184,190,195,200,205,209,214,218,222,226,229,233,236,239,242,244,246,248,250,251,253,253,254,254,254,254,254,253,252,251,249,247,245,243,240,237,234,231
-.db 228,224,220,216,211,207,202,197,192,187,182,176,171,165,160,154,148,142,136,130,125,119,113,107,101, 95, 90, 84, 79, 73, 68, 63, 58, 53, 48, 44, 39, 35, 31, 27, 24, 21, 18, 15, 12, 10,  8,  6
-.db   4,  3,  2,  1,  1,  1,  1,  1,  2,  2,  4,  5,  7,  9, 11, 13, 16, 19, 22, 26, 29, 33, 37, 41, 46, 50, 55, 60, 65, 71, 76, 81, 87, 92, 98,104,110,116,122,  0,  0,  0,  0,  0,  0,  0,  0,  0
-.db   0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0
-;==================================================================================================================================================================================================
-abWaveG:
-.db 128,134,140,146,152,159,165,171,176,182,188,193,199,204,209,213,218,222,226,230,234,237,240,243,245,247,249,251,252,253,254,254,254,254,254,253,252,250,248,246,244,241,239,235,232,228,224,220
-.db 216,211,206,201,196,191,185,179,174,168,162,156,149,143,137,131,124,118,112,106, 99, 93, 87, 81, 76, 70, 64, 59, 54, 49, 44, 39, 35, 31, 27, 23, 20, 16, 14, 11,  9,  7,  5,  3,  2,  1,  1,  1
-.db   1,  1,  2,  3,  4,  6,  8, 10, 12, 15, 18, 21, 25, 29, 33, 37, 42, 46, 51, 56, 62, 67, 73, 79, 84, 90, 96,103,109,115,121,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0
-.db   0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0
-;==================================================================================================================================================================================================
-abWaveGIS:
-.db 128,134,141,147,154,160,167,173,179,185,191,197,202,207,212,217,222,226,230,234,237,241,244,246,248,250,252,253,254,254,254,254,254,253,252,250,248,246,244,241,237,234,230,226,222,217,212,207
-.db 202,197,191,185,179,173,167,160,154,147,141,134,128,121,114,108,101, 95, 88, 82, 76, 70, 64, 58, 53, 48, 43, 38, 33, 29, 25, 21, 18, 14, 11,  9,  7,  5,  3,  2,  1,  1,  1,  1,  1,  2,  3,  5
-.db   7,  9, 11, 14, 18, 21, 25, 29, 33, 38, 43, 48, 53, 58, 64, 70, 76, 82, 88, 95,101,108,114,121,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0
-.db   0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0
-;==================================================================================================================================================================================================
-abWaveA:
-.db 128,135,142,149,156,162,169,176,182,188,195,200,206,212,217,222,226,230,234,238,241,244,247,249,251,252,254,254,254,254,254,253,252,250,248,246,243,240,236,232,228,224,219,214,209,203,198,192
-.db 185,179,172,166,159,152,145,138,131,124,117,110,103, 96, 89, 83, 76, 70, 63, 57, 52, 46, 41, 36, 31, 27, 23, 19, 15, 12,  9,  7,  5,  3,  2,  1,  1,  1,  1,  1,  3,  4,  6,  8, 11, 14, 17, 21
-.db  25, 29, 33, 38, 43, 49, 55, 60, 67, 73, 79, 86, 93, 99,106,113,120,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0
-.db   0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0
-;==================================================================================================================================================================================================
-abWaveAIS:
-.db 128,135,142,150,157,164,171,178,185,192,198,204,210,215,221,225,230,234,238,242,245,247,250,251,253,254,254,254,254,253,252,251,249,246,243,240,236,232,228,223,218,213,207,201,195,188,182,175
-.db 168,161,153,146,139,131,124,116,109,102, 94, 87, 80, 73, 67, 60, 54, 48, 42, 37, 32, 27, 23, 19, 15, 12,  9,  6,  4,  3,  2,  1,  1,  1,  1,  2,  4,  5,  8, 10, 13, 17, 21, 25, 30, 34, 40, 45
-.db  51, 57, 63, 70, 77, 84, 91, 98,105,113,120,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0
-.db   0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0
-;==================================================================================================================================================================================================
-abWaveH:
-.db 128,135,143,151,159,166,174,181,188,195,202,208,214,219,225,230,234,238,242,245,248,250,252,253,254,254,254,254,253,251,249,246,243,240,236,232,227,222,217,211,205,198,192,185,177,170,163,155
-.db 147,139,131,124,116,108,100, 92, 85, 78, 70, 63, 57, 50, 44, 38, 33, 28, 23, 19, 15, 12,  9,  6,  4,  2,  1,  1,  1,  1,  2,  3,  5,  7, 10, 13, 17, 21, 25, 30, 36, 41, 47, 53, 60, 67, 74, 81
-.db  89, 96,104,112,120,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0
-.db   0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0
+;=======================================================================================================================================================================
+C:   .db 0x01,0x01,0x03,0x06,0x0A,0x0F,0x16,0x1D,0x26,0x2F,0x39,0x44,0x4F,0x5B,0x67,0x73,0x7F,0x8C,0x98,0xA4,0xB0,0xBB,0xC6,0xD0,0xD9,0xE2,0xE9,0xF0,0xF5,0xF9,0xFC,0xFE
+     .db 0xFF,0xFE,0xFC,0xF9,0xF5,0xF0,0xE9,0xE2,0xD9,0xD0,0xC6,0xBB,0xB0,0xA4,0x98,0x8C,0x80,0x73,0x67,0x5B,0x4F,0x44,0x39,0x2F,0x26,0x1D,0x16,0x0F,0x0A,0x06,0x03,0x00
+CIS: .db 0x01,0x01,0x03,0x07,0x0B,0x11,0x18,0x21,0x2A,0x34,0x3F,0x4B,0x57,0x64,0x71,0x7E,0x8B,0x98,0xA5,0xB2,0xBD,0xC9,0xD3,0xDC,0xE5,0xEC,0xF3,0xF8,0xFB,0xFE,0xFE,0xFE
+     .db 0xFC,0xF9,0xF5,0xEF,0xE8,0xE0,0xD7,0xCD,0xC2,0xB6,0xAA,0x9E,0x91,0x84,0x76,0x69,0x5C,0x50,0x44,0x39,0x2E,0x24,0x1C,0x14,0x0E,0x08,0x03,0x00,0x00,0x00,0x00,0x00
+D:   .db 0x01,0x01,0x04,0x07,0x0D,0x13,0x1B,0x24,0x2F,0x3A,0x46,0x53,0x60,0x6E,0x7C,0x8A,0x98,0xA5,0xB2,0xBF,0xCB,0xD5,0xDF,0xE8,0xEF,0xF5,0xFA,0xFD,0xFE,0xFE,0xFD,0xFA
+     .db 0xF5,0xEF,0xE8,0xDF,0xD6,0xCB,0xBF,0xB3,0xA6,0x98,0x8A,0x7C,0x6E,0x61,0x53,0x46,0x3A,0x2F,0x25,0x1B,0x13,0x0D,0x07,0x04,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+DIS: .db 0x01,0x01,0x04,0x08,0x0E,0x16,0x1E,0x29,0x34,0x40,0x4E,0x5C,0x6A,0x79,0x88,0x96,0xA5,0xB3,0xC0,0xCC,0xD7,0xE1,0xEA,0xF2,0xF7,0xFB,0xFE,0xFE,0xFD,0xFB,0xF6,0xF0
+     .db 0xE9,0xE0,0xD5,0xCA,0xBD,0xB0,0xA2,0x94,0x85,0x76,0x67,0x59,0x4B,0x3E,0x32,0x27,0x1D,0x14,0x0D,0x07,0x03,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+E:   .db 0x01,0x01,0x04,0x09,0x10,0x18,0x22,0x2D,0x3A,0x47,0x56,0x65,0x75,0x84,0x94,0xA3,0xB2,0xC0,0xCD,0xD9,0xE3,0xEC,0xF3,0xF9,0xFD,0xFE,0xFE,0xFC,0xF8,0xF2,0xEA,0xE1
+     .db 0xD6,0xCA,0xBD,0xAF,0xA0,0x91,0x81,0x71,0x62,0x53,0x45,0x37,0x2B,0x20,0x16,0x0E,0x08,0x04,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+F:   .db 0x01,0x02,0x05,0x0A,0x12,0x1B,0x26,0x32,0x40,0x4F,0x5F,0x6F,0x80,0x90,0xA1,0xB0,0xBF,0xCD,0xDA,0xE4,0xEE,0xF5,0xFA,0xFD,0xFE,0xFD,0xFA,0xF5,0xED,0xE4,0xD9,0xCC
+     .db 0xBE,0xB0,0xA0,0x8F,0x7F,0x6E,0x5E,0x4E,0x3F,0x32,0x25,0x1A,0x11,0x0A,0x05,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+FIS: .db 0x01,0x02,0x05,0x0B,0x14,0x1E,0x2A,0x38,0x47,0x57,0x68,0x7A,0x8C,0x9D,0xAE,0xBE,0xCC,0xDA,0xE5,0xEF,0xF6,0xFB,0xFE,0xFE,0xFC,0xF8,0xF1,0xE8,0xDD,0xD0,0xC2,0xB2
+     .db 0xA1,0x90,0x7E,0x6D,0x5C,0x4B,0x3C,0x2D,0x21,0x16,0x0D,0x07,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+G:   .db 0x01,0x02,0x06,0x0D,0x16,0x21,0x2F,0x3E,0x4F,0x60,0x73,0x85,0x98,0xAA,0xBB,0xCB,0xD9,0xE5,0xEF,0xF7,0xFC,0xFE,0xFE,0xFB,0xF5,0xED,0xE2,0xD5,0xC7,0xB6,0xA5,0x93
+     .db 0x80,0x6E,0x5B,0x4A,0x3A,0x2B,0x1E,0x13,0x0A,0x05,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+GIS: .db 0x01,0x02,0x07,0x0E,0x18,0x25,0x34,0x45,0x57,0x6A,0x7E,0x92,0xA5,0xB7,0xC8,0xD8,0xE5,0xEF,0xF7,0xFC,0xFE,0xFD,0xF9,0xF2,0xE8,0xDC,0xCD,0xBD,0xAB,0x98,0x84,0x70
+     .db 0x5D,0x4B,0x39,0x2A,0x1C,0x11,0x09,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+A:   .db 0x01,0x02,0x07,0x10,0x1B,0x29,0x3A,0x4C,0x60,0x75,0x8A,0x9E,0xB2,0xC5,0xD5,0xE3,0xEF,0xF7,0xFD,0xFE,0xFD,0xF8,0xF0,0xE4,0xD6,0xC6,0xB3,0x9F,0x8B,0x76,0x61,0x4D
+     .db 0x3B,0x2A,0x1C,0x10,0x08,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+B:   .db 0x01,0x02,0x08,0x12,0x1E,0x2E,0x40,0x54,0x6A,0x80,0x96,0xAB,0xC0,0xD2,0xE1,0xEE,0xF7,0xFD,0xFE,0xFC,0xF6,0xED,0xE0,0xD0,0xBE,0xAA,0x94,0x7E,0x68,0x53,0x3F,0x2D
+     .db 0x1D,0x11,0x08,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+H:   .db 0x01,0x03,0x09,0x14,0x22,0x33,0x47,0x5D,0x74,0x8C,0xA3,0xB9,0xCD,0xDE,0xEC,0xF6,0xFD,0xFE,0xFC,0xF5,0xEB,0xDC,0xCB,0xB7,0xA1,0x8A,0x72,0x5B,0x45,0x31,0x20,0x12
+     .db 0x08,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
