@@ -1,3 +1,7 @@
+; Sinus Generator
+; 
+; source text: tab width = 8
+
 .DEVICE atmega328p
 
 .dseg
@@ -20,119 +24,102 @@ abFSIdx: .Byte 12 ; frequency sample indices, each element points to a sample of
 .def mOut	= r22
 .def rTest	= r23
 
-setup:
+	setup:
 
 ; define PORTD as output
 
-		ldi		r16,	0xff
-		out		DDRD,	r16
-		out		PORTD,	r16
+		ldi	r16,	0xff
+		out	DDRD,	r16
+		out	PORTD,	r16
 
-init:
+	init:
 
 ; initialize a register with NULL for later use
 
-		eor		nNULL,	nNULL			; we need a NULL in a register :-(
+		eor	nNULL,	nNULL			; we need a NULL in a register :-(
 
 ; initialize all Frequency-Sample-Indices with "0"
 
-		ldi	 	YL,		low (abFSIdx)	; index of sample in wave
-		ldi	 	YH,		high(abFSIdx)
-		st		Y,		nNULL			; 0 => anPosFrequencies[ 0]
-		adiw	YL,		1
-		st		Y,		nNULL			; 0 => anPosFrequencies[ 1]
-		adiw	YL,		1
-		st		Y,		nNULL			; 0 => anPosFrequencies[ 2]
-		adiw	YL,		1
-		st		Y,		nNULL			; 0 => anPosFrequencies[ 3]
-		adiw	YL,		1
-		st		Y,		nNULL			; 0 => anPosFrequencies[ 4]
-		adiw	YL,		1
-		st		Y,		nNULL			; 0 => anPosFrequencies[ 5]
-		adiw	YL,		1
-		st		Y,		nNULL			; 0 => anPosFrequencies[ 6]
-		adiw	YL,		1
-		st		Y,		nNULL			; 0 => anPosFrequencies[ 7]
-		adiw	YL,		1
-		st		Y,		nNULL			; 0 => anPosFrequencies[ 8]
-		adiw	YL,		1
-		st		Y,		nNULL			; 0 => anPosFrequencies[ 9]
-		adiw	YL,		1
-		st		Y,		nNULL			; 0 => anPosFrequencies[10]
-		adiw	YL,		1
-		st		Y,		nNULL			; 0 => anPosFrequencies[11]
+		ldi 	YL,	low (abFSIdx*2)		; index of sample in wave
+		ldi 	YH,	high(abFSIdx*2)
 
-loop:
+		ldi	r0,	11
+	FSIdx:	st	Y,	nNULL			; 0 => anPosFrequencies[n]
+		adiw	YL,	2
+		dec	r0
+		brne	FSIdx
+	loop:
 
 ; sample index into the wave to Y
 
-		ldi	 	YL,		low (abFSIdx*2)	; index of sample in wave
-		ldi	 	YH,		high(abFSIdx*2)	;   -- " --
-		ld		nSmpIx,	Y				; anPosFrequencies[0] => r17
+		ldi 	YL,	low (abFSIdx*2)		; index of sample in wave
+		ldi 	YH,	high(abFSIdx*2)		;   -- " --
+		ld	nSmpIx,	Y			; anPosFrequencies[0] => r17
 
 ; start pointer of the wave to Z
 
-		ldi		ZL,		low (abWaveC*2)	; address of the wave matrix to Z
-		ldi		ZH,		high(abWaveC*2)	;   -- " --
-		mov		ZLsave,	ZL				; sometimes we need the startpoint again later on
-		mov		ZHsave,	ZH				;   -- " --
+		ldi	ZL,	low (abWaveC*2)		; address of the wave matrix to Z
+		ldi	ZH,	high(abWaveC*2)		;   -- " --
+		mov	ZLsave,	ZL			; sometimes we need the startpoint again later on
+		mov	ZHsave,	ZH			;   -- " --
 
 ; add index of the next sample to wave pointer
 
-		add		ZL,		nSmpIx			; &abWaveSet[abFSIdx[0]]  (X)
-		adc		ZH,		nNULL			;   -- " --
-		add		ZL,		nSmpIx			;   -- " --
-		adc		ZH,		nNULL			;   -- " --
+		add	ZL,	nSmpIx			; &abWaveSet[abFSIdx[0]]  (X)
+		adc	ZH,	nNULL			;   -- " --
+		add	ZL,	nSmpIx			;   -- " --
+		adc	ZH,	nNULL			;   -- " --
 
 ; get and check the next sample
 
-strt1:
-		lpm								; load [Z] to r0
-		tst		r0						; set the flag
-		brne	next1					; if not 0, we are done with reading
+	strt1:
+		lpm					; load [Z] to r0
+		tst	r0				; set the flag
+		brne	next1				; if not 0, we are done with reading
 
 ; end of wave, restart the wave
 
-		mov		ZL,		ZLsave			; reset Z to start of vector to restart the wave
-		mov		ZH,		ZHsave			;   -- " --
-		mov		nSmpIx,	nNULL			; the sample pointer becomes 0 too
-		rjmp	strt1					; now get the correct value
+		mov	ZL,	ZLsave			; reset Z to start of vector to restart the wave
+		mov	ZH,	ZHsave			;   -- " --
+		mov	nSmpIx,	nNULL			; the sample pointer becomes 0 too
+		rjmp	strt1				; now get the correct value
 
 ; output sample value
 
-next1:
-		inc		nSmpIx					; next time the next sample
-		st		Y,		nSmpIx			; write back to abFSIdx
+	next1:
+		inc	nSmpIx				; next time the next sample
+		st	Y,	nSmpIx			; write back to abFSIdx
 
 
 ; D to A converter [ geprueft! ]
 
-; level / 32
-		mov		nBits, 	r0				; the sample value
-		lsr		nBits
-		lsr		nBits
-		lsr		nBits
-		lsr		nBits
-		lsr		nBits
+		mov	nBits,	r0			; the sample value from lpm (lbl:strt1)
 
-dac:
+; divide by 32 to scale down into a 0 to 6 range (38 would be better)
+
+		lsr	nBits
+		lsr	nBits
+		lsr	nBits
+		lsr	nBits
+		lsr	nBits
+
+	dac:						; Digital to Analog converter
+		eor	mOut,	mOut			; initialize output byte
+
 ; cummulate bits
-		eor		mOut,	mOut			; initialize output byte
 
-		inc		nBits					; prepair nBits
-for:	dec		nBits					; loop for bits to set
-		breq	end						; break if no bits to set anymore
+		inc	nBits				; prepair nBits
+	for:	dec	nBits				; loop for bits to set
+		breq	end				; break if no bits to set anymore
 
-		lsl		mOut					; shift existing bits
-		ori		mOut,	0x04			; insert bit 2
-		rjmp	for						; loop to-for
+		lsl	mOut				; shift existing bits
+		ori	mOut,	0x04			; insert bit 2
+		rjmp	for				; loop to-for
 
-end:                  					; output result
-		out		PORTD,	mOut			; 
+	end:						; output result
+		out	PORTD,	mOut			; 
 
-		nop
-
-		jmp		loop
+		jmp	loop				; next sample
 
 
 abWaveSet:
