@@ -1,42 +1,49 @@
-; Sinus Generator
+; Wave Generator
 
-.DEVICE atmega328p
+;.DEVICE atmega328p
+.DEVICE atmega324p 
 
 .dseg
-abFSIdx: .Byte 12       ; wave sample indices, each element points to a sample inside a different wave
+abFSIdx:   .Byte 12        ; wave sample indices, each element points to a sample inside a different wave
+abWave:    .Byte 64*12
 
 .cseg
 
 .org 0x0000
-     rjmp    setup      ; register 'setup' as Programm Start Routine
+     rjmp    setup       ; register 'setup' as Programm Start Routine
 .org OVF1addr
-     rjmp    isr_timer1 ; register 'isr_timer1' as Timer1 Overflow Routine
+     rjmp    isr_timer1  ; register 'isr_timer1' as Timer1 Overflow Routine
 
 
 ; these should have be known in the environment, gavrasm doesn't know them
-.def Y          = r28   ; Z for wordwise access
-.def YL         = r28   ; Y low byte
-.def YH         = r29   ; Y high byte
-.def Z          = r30   ; Z for wordwise access
-.def ZL         = r30   ; Z low byte
-.def ZH         = r31   ; Z high byte
+.def Y           = r28   ; Z for wordwise access
+.def YL          = r28   ; Y low byte
+.def YH          = r29   ; Y high byte
+.def Z           = r30   ; Z for wordwise access
+.def ZL          = r30   ; Z low byte
+.def ZH          = r31   ; Z high byte
 
-.equ nTonesMax  = 9     ; we assume to be albe to play 9 tones in parallel
+.equ nBitsLimit  = 13    ; we assume to be albe to play 12 tones in parallel
+.equ ioInputL    = PINB  ; 8 bits
+.equ ioInputH    = PIND  ; 4 bits
+.equ ioOutputL   = PORTC ; 
+.equ ioOutputH   = PORTA ; 
 
 ; names for the registers to help humans to understand
-.def nTones     = r14   ; counter to count tones played in parallel
-.def nWaveLen   = r15   ; the length in bytes of a wave
-.def nNULL      = r16   ; a NULL - needed in 'reg > 15' because of the CPU 
-.def rTemp      = r17   ; a temporary register
-.def Zsave      = r18   ; backup to reset address Z                  (word)
-.def ZLsave     = r18   ; backup to reset address Z to start of wave (low)
-.def ZHsave     = r19   ;                                            (high)
-.def nSmpIx     = r20   ; the index into the current wave for current step
-.def nSmpVe     = r21   ; one byte sample value of a wave for current step
-.def nSampleL   = r22   ; sum of current samples (low)
-.def nSampleH   = r23   ;                        (high)
-.def mInputVal  = r24   ; bitmask representing all input signals bitwise
-.def mInputBit  = r25   ; bitmask representing one bit to ask from mInputVal
+.def fInputHigh  = r13   ; flag if to read from LOW or HIGH port
+.def nBits       = r14   ; counter to count tones played in parallel
+.def nWaveLen    = r15   ; the length in bytes of a wave
+.def nNULL       = r16   ; a NULL - needed in 'reg > 15' because of the CPU 
+.def rTemp       = r17   ; a temporary register
+.def Zsave       = r18   ; backup to reset address Z                  (word)
+.def ZLsave      = r18   ; backup to reset address Z to start of wave (low)
+.def ZHsave      = r19   ;                                            (high)
+.def nSmpIx      = r20   ; the index into the current wave for current step
+.def nSmpVe      = r21   ; one byte sample value of a wave for current step
+.def nSampleL    = r22   ; sum of current samples (low)
+.def nSampleH    = r23   ;                        (high)
+.def mInputVal   = r24   ; bitmask representing all input signals bitwise
+.def mInputBit   = r25   ; bitmask representing one bit to ask from input Port
 
 ;  C	*   523.25 Hz
 ;CIS	*   554.37 Hz
@@ -52,8 +59,12 @@ abFSIdx: .Byte 12       ; wave sample indices, each element points to a sample i
 ;  H	*   987.77 Hz
 
 ; 2 byte timing, Interrupt Generator has to be adjusted to 64*'C' = 33488 Hz
-.equ    TPBH    = 0xfe  ; timer preset (high)
-.equ    TPBL    = 0x24  ; timer preset (low)
+;.equ    TPBH    = 0xfe  ; timer preset (high)
+;.equ    TPBL    = 0x24  ; timer preset (low)
+
+.equ    TPBH    = 0xfd  ; timer preset (high)
+.equ    TPBL    = 0xbb  ; timer preset (low)
+
 
 ; ==================================================
 ; SETUP INTERRUPT MECHANICS
@@ -90,18 +101,20 @@ abFSIdx: .Byte 12       ; wave sample indices, each element points to a sample i
 ; PORTx operation definition values
 
             ldi     r16,        0x00                ; r16 to input mode for all pins
-            ldi     r17,        0xFF                ; all pins to pullup / all pins to output
+            ldi     r17,        0xFF                ; all pins to pullup / all pins to outtput
 
 ; define PORTC as input
 
-            out     DDRC,       r16                 ; set input pins
-            out     PORTC,      r17                 ; set pullup mode
+            out     DDRB,       r16                 ; set input pins
+            out     PORTB,      r17                 ; set pullup mode
+            out     DDRD,       r16                 ; set input pins
+            out     PORTD,      r17                 ; set pullup mode
 
 ; define PORTD and PORTB as output
 
-            out     DDRD,       r17                 ; set output pins for PORTD
-            ldi     r17,        0x0F                ; only the lower 4 bits to output on PORTB
-            out     DDRB,       r17                 ; set output pins for PORTB
+            out     DDRC,       r17                 ; set output pins for PORTC
+            ldi     r17,        0x0F                ; only the lower 4 bits to output on PORTA
+            out     DDRA,       r17                 ; set output pins for PORTA
 
 ; from here on we will use register alias names as far as possible
 
@@ -145,8 +158,8 @@ abFSIdx: .Byte 12       ; wave sample indices, each element points to a sample i
 
 ; output of last sum of samples
 
-            out     PORTD,      nSampleL            ; [1] output result of last operation to output ports
-            out     PORTB,      nSampleH            ; [1] here to guarantee contant timing of output signal
+            out     ioOutputL,  nSampleL            ; [1] output result of last operation to output ports
+            out     ioOutputH,  nSampleH            ; [1] here to guarantee contant timing of output signal
 
 ; reset output value
 
@@ -155,8 +168,10 @@ abFSIdx: .Byte 12       ; wave sample indices, each element points to a sample i
 
 ; initialize counter for parallel tones
 
-            ldi     rTemp, nTonesMax                ; [1] initialize counter for parallel active tones
-            mov     nTones, rTemp                   ; [1] with amount of maximum parallel playable tones
+            ldi     rTemp, nBitsLimit               ; [1] initialize counter for parallel active tones
+            mov     nBits, rTemp                    ; [1] with amount of maximum parallel playable tones
+
+            clr     fInputHigh                      ; we start reading the LOW port
 
 ; --------------------------------------------------
 ; initial address calculation
@@ -184,11 +199,18 @@ abFSIdx: .Byte 12       ; wave sample indices, each element points to a sample i
 
     main:
 
-; prepair input bitmask for next bit to check
+            dec     nBits                           ; [1] next round, if 0, we are done
+            breq    isr_end                         ; [1,2] all keys tested, end of ISR
 
             rol     mInputBit                       ; [1] the first bit loures in the carry flag
-            sbrc    mInputBit,  0x06                ; [1,2] the last bit we are allowed to start a run
-            rjmp    isr_end                         ; [2] all bits tested, end of ISR
+            brcc    start_query                     ; [1,2] our bit was not overflown
+
+; this point will be reached after 8 bits were tested
+
+            rol     mInputBit                       ; [1] the first bit loures in the carry flag again
+            mov     fInputHigh,  mInputBit          ; [1] mInputBit now is 0x01, we use it here as 0x01
+
+    start_query:
 
 ; call sample index
 
@@ -196,21 +218,35 @@ abFSIdx: .Byte 12       ; wave sample indices, each element points to a sample i
 
 ; if wave not finalized, play it anyway
 
-            tst     nSmpIx                          ; [1]
-            breq    run                             ; [1,2]
+            tst     nSmpIx                          ; [1] Non-zero if ave if not finished yet
+            brne    run                             ; [1,2] let us finish the wave first
 
-; if key pressed, add sample
+; query external input
 
-            in      mInputVal,  PINC                ; [1] get input signals
-            and     mInputVal,  mInputBit           ; [1] check if current bit is ON
-            breq    run                             ; [1,2] a bit is 0, so we have to make a run for it
+            tst     fInputHigh                      ; [1] do we have to as the HIGH port?
+            breq    input_low                       ; [1] no, then proceed with the LOW port
+
+; query the HIGH port
+
+            in      mInputVal, ioInputH             ; [1] get the HIGH port input mask
+            and     mInputVal, mInputBit            ; [1] combine with the bit selection mask
+            breq    run                             ; [1,2] key pressed, we have to add the current tone
+            rjmp    next_wave                       ; [2] we won't ask the LOW port anymore
+
+; query the LOW port
+
+    input_low:
+
+            in      mInputVal, ioInputL             ; [1] get the LOW port input mask
+            and     mInputVal, mInputBit            ; [1] combine with the bit selection mask
+            breq    run                             ; [1,2] key pressed, we have to add the current tone
 
     next_wave:
 
             adiw    Y,          1                   ; [2] the next element of the sample index vector
 
             add     ZLsave,     nWaveLen            ; [1] calculate the address of the next wave
-            adc     ZHsave,     nNULL               ; [1]
+            adc     ZHsave,     nNULL               ; [1] add the carry flag if set
 
             rjmp    main                            ; [2] check the next pin/key
 
@@ -246,6 +282,7 @@ abFSIdx: .Byte 12       ; wave sample indices, each element points to a sample i
             inc     nSmpIx                          ; [1] next time the next sample
 
     next_wo_inc:
+
             st      Y,          nSmpIx              ; [2] write back to abFSIdx
 
 ; adding the sample to the sum of samples
@@ -253,14 +290,6 @@ abFSIdx: .Byte 12       ; wave sample indices, each element points to a sample i
             add     nSampleL,   rTemp               ; [1] accumulate all samples of all runs 
             adc     nSampleH,   nNULL               ; [1]
 
-; check if maximum parallel tones are already reached
-
-            dec     nTones                          ; [1] one tone added
-            breq    isr_end                         ; [1,2] if maximum reached, we are done
-
-; test if all keys were checked
-
-            sbrs    mInputBit,  0x05                ; [1,2] reached the last bit we will read?
             rjmp    next_wave                       ; [2] no, so we go to the next step
 
 ; output sample value
@@ -286,5 +315,5 @@ FIS: .dw 0x0402,0x1009,0x2419,0x4031,0x6050,0x8372,0xA695,0xC6B6,0xE0D4,0xF3EA,0
 G:   .dw 0x0402,0x120A,0x291C,0x4737,0x6A58,0x8F7D,0xB3A2,0xD2C4,0xEBE0,0xFAF4,0xFFFE,0xF8FD,0xE8F1,0xCEDC,0xAEBF,0x8A9C,0x6577,0x4253,0x2533,0x0F19,0x0308,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000
 GIS: .dw 0x0502,0x140B,0x2D1F,0x4E3D,0x7561,0x9C88,0xC0AF,0xDFD0,0xF4EB,0xFEFA,0xFCFE,0xEEF6,0xD5E3,0xB4C6,0x8FA2,0x677B,0x4254,0x2332,0x0D17,0x0006,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000
 A:   .dw 0x0502,0x160C,0x3223,0x5744,0x806B,0xA995,0xCDBC,0xEADD,0xFBF4,0xFEFE,0xF4FB,0xDEEA,0xBDCE,0x96AA,0x6C81,0x4558,0x2433,0x0D17,0x0006,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000
-H:   .dw 0x0602,0x180D,0x3827,0x604B,0x8B75,0xB6A1,0xDAC9,0xF3E8,0xFEFA,0xFAFE,0xE7F2,0xC8D9,0xA0B4,0x748A,0x495E,0x2536,0x0D17,0x0005,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000
-B:   .dw 0x0602,0x1B0F,0x3E2B,0x6953,0x9881,0xC3AE,0xE5D6,0xFAF2,0xFEFE,0xF1F9,0xD4E4,0xACC1,0x7E96,0x5167,0x293C,0x0E1A,0x0006,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000
+AIS: .dw 0x0602,0x180D,0x3827,0x604B,0x8B75,0xB6A1,0xDAC9,0xF3E8,0xFEFA,0xFAFE,0xE7F2,0xC8D9,0xA0B4,0x748A,0x495E,0x2536,0x0D17,0x0005,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000
+H:   .dw 0x0602,0x1B0F,0x3E2B,0x6953,0x9881,0xC3AE,0xE5D6,0xFAF2,0xFEFE,0xF1F9,0xD4E4,0xACC1,0x7E96,0x5167,0x293C,0x0E1A,0x0006,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000
