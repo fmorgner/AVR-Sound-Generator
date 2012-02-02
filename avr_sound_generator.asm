@@ -1,11 +1,9 @@
 ; Wave Generator
 
-;.DEVICE atmega328p
 .DEVICE atmega324p 
 
 .dseg
 abFSIdx:   .Byte 12        ; wave sample indices, each element points to a sample inside a different wave
-abWave:    .Byte 64*12
 
 .cseg
 
@@ -126,10 +124,10 @@ abWave:    .Byte 64*12
 
 ; initialize all Frequency-Sample-Indices with "0"
 
-            ldi     YL,         low (abFSIdx*2)     ; list of indices of next sample in wave
-            ldi     YH,         high(abFSIdx*2)     ;   -- " --
+            ldi     YL,         low (abFSIdx)       ; list of indices of next sample in wave
+            ldi     YH,         high(abFSIdx)       ;   -- " --
 
-            ldi     rTemp,      0x0C                ; 12 Tunes
+            ldi     rTemp,      0x0C                ; 12 Tones
     FSIdx:
             st      Y+,         nNULL               ; 0 => abFSIdx[n]
             dec     rTemp                           ; one done
@@ -154,7 +152,7 @@ abWave:    .Byte 64*12
             ldi     rTemp,      TPBH                ; [1] first the high byte to miminize random impact
             sts     TCNT1H,     rTemp               ; [2] by overflow of low byte (we cant be sure which
             ldi     rTemp,      TPBL                ; [1] value low byte becomes, but the interrupt timer
-            sts     TCNT1L,     rTemp               ; [2] 00:00 while entering the service routine)
+            sts     TCNT1L,     rTemp               ; [2] is 00:00 while entering the service routine)
 
 ; output of last sum of samples
 
@@ -179,13 +177,13 @@ abWave:    .Byte 64*12
 
 ; list of sample indices into the wave to Y
 
-            ldi     YL,         low (abFSIdx*2)     ; [1] load Y to point to the start sample index array
-            ldi     YH,         high(abFSIdx*2)     ; [1] 
+            ldi     YL,         low (abFSIdx)       ; [1] load Y to point to the start sample index array
+            ldi     YH,         high(abFSIdx)       ; [1] 
 
 ; start pointer wave to Z and copy to save registers
 
             ldi     ZL,         low (abWaveSet*2)   ; [1] load Z to point to start of 2D wave matrix
-            ldi     ZH,         high(abWaveSet*2)   ; [1]
+            ldi     ZH,         high(abWaveSet*2)   ; [1] 
             movw    Zsave,      Z                   ; [1] each round we need the startpoint again
 
 ; start on input pin 0
@@ -264,8 +262,8 @@ abWave:    .Byte 64*12
 ; get and check current sample sample
 
             lpm     rTemp,      Z                   ; [3] load [Z] from CSEG to register
-            cpi     rTemp,      0xFF                ; [1] fi 0xff, the wave has its last entry: 0
-            brne    next                            ; [1,2] if not 0, we have a sample
+            cpi     rTemp,      0xFF                ; [1] if 0xff, its the last entry of the wave
+            brne    next                            ; [1,2] if not 0, we have a valid sample
 
 ; end of wave, no immediate value present
 
@@ -273,24 +271,20 @@ abWave:    .Byte 64*12
 
 ; end of wave, restart the wave
 
-            clr     nSmpIx                          ; [1] the sample pointer becomes 0 too, to restart the current wave
-            rjmp    next_wo_inc                     ; [2] we must no increment our nSmpIx, because it is already correct
+            ldi     nSmpIx,     -1                  ; [1] the sample pointer becomes 0 too (next cmd) = restart the wave 
 
 ; make address of next 'sample in wave' pointer
 
     next:
             inc     nSmpIx                          ; [1] next time the next sample
-
-    next_wo_inc:
-
             st      Y,          nSmpIx              ; [2] write back to abFSIdx
 
 ; adding the sample to the sum of samples
 
             add     nSampleL,   rTemp               ; [1] accumulate all samples of all runs 
-            adc     nSampleH,   nNULL               ; [1]
+            adc     nSampleH,   nNULL               ; [1] add carry flag to high byte
 
-            rjmp    next_wave                       ; [2] no, so we go to the next step
+            rjmp    next_wave                       ; [2] we go to the next step
 
 ; output sample value
 
@@ -299,7 +293,7 @@ abWave:    .Byte 64*12
 ; this is 12 bit (0 to 4096) resolution
 
     isr_end:
-            reti                                    ; [4] close the book
+            reti                                    ; [4] close the book (value is not yet used!)
 
 
 abWaveSet:
