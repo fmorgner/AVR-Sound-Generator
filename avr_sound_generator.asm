@@ -1,6 +1,4 @@
 ; Sinus Generator
-; 
-; source text: tab width = 8
 
 .DEVICE atmega328p
 
@@ -10,10 +8,10 @@ abFSIdx: .Byte 12                       ; wave sample indices, each element poin
 .cseg
 
 .org    0x0000
-        rjmp    setup                   ; 'setup' als Start-Routine registrieren
+        rjmp    setup                   ; register 'setup' as Programm Start Routine
         
 .org    OVF0addr
-        rjmp    isr_timer0              ; 't0over' als Timer0 Overflow-Routine registrieren
+        rjmp    isr_timer0              ; register 'isr_timer0' as Timer0 Overflow Routine
 
 ; these should have be known in the environment, gavrasm doesn't know them
 .def YL         = r28
@@ -34,12 +32,9 @@ abFSIdx: .Byte 12                       ; wave sample indices, each element poin
 .def mOut       = r23
 .def rTemp      = r24
 .def cNextWave  = r25   ; ! special register
-.def mInputVal  = r26   ; ! special register 
+.def mInputVal  = r26   ; ! special register X
 .def mInputBit  = r27   ; ! special register X
 
-;  A	    440.00 Hz
-;  B	    466.16 Hz
-;  H	    493.88 Hz
 ;  C	*   523.25 Hz
 ;CIS	*   554.37 Hz
 ;  D	*   587.33 Hz
@@ -52,13 +47,11 @@ abFSIdx: .Byte 12                       ; wave sample indices, each element poin
 ;  A	*   880.00 Hz
 ;  B	*   932.33 Hz
 ;  H	*   987.77 Hz
-;  C	   1046.50 Hz
-;CIS	   1108.73 Hz
-;  D	   1174.66 Hz
 
-; 2 bytes timing, has to be adjusted to 64*'C' = 33488 Hz
+; 2 byte timing, Interrupt Generator has to be adjusted to 64*'C' = 33488 Hz
+
 .equ    TPBH    = 0xfc                              ; High Byte des Timer Presets
-.equ    TPBL    = 0x48			                    ; Low  Byte des Timer Presets
+.equ    TPBL    = 0x48                              ; Low  Byte des Timer Presets
 
 ; ones per program start
     setup:
@@ -67,7 +60,7 @@ abFSIdx: .Byte 12                       ; wave sample indices, each element poin
 
             cli                                     ; do not generate interrupts while setup phase
 
-            ldi     rTemp,      LOW (RAMEND)        ; Stackpointer initialisieren
+            ldi     rTemp,      LOW (RAMEND)        ; initializing stack pointer
             out     SPL,        rTemp               ; -- " --
             ldi     rTemp,      HIGH(RAMEND)        ; -- " --
             out     SPH,        rTemp               ; -- " --
@@ -87,18 +80,18 @@ abFSIdx: .Byte 12                       ; wave sample indices, each element poin
 
 ; PORT definition
 
-            ldi     r16,        0x00                ; r16 to input mode for pin 8 t0 13
-            ldi     r17,        0xFF                ; pin 0 to 5 / 8 to 13
-            ldi     r18,        0xFF                ; all pins
+            ldi     r16,        0x00                ; r16 to input mode for all pins
+            ldi     r17,        0xFF                ; all pins to input
+            ldi     r18,        0xFF                ; all pins to output
 
 ; define PORTB as input
 
-            out     DDRC,       r16                 ; all pins to input 
-            out     PORTC,      r17                 ; pin 8 to 13 to pullup
+            out     DDRC,       r16                 ; set input pins
+            out     PORTC,      r17                 ; set pullup mode
 
 ; define PORTD as output
 
-            out     DDRD,       r18                 ; all pins to output
+            out     DDRD,       r18                 ; set output pins
 
 ; from here on we will use register alias names as far as possible
 
@@ -110,19 +103,19 @@ abFSIdx: .Byte 12                       ; wave sample indices, each element poin
 
 ; initialize all Frequency-Sample-Indices with "0"
 
-            ldi     YL,         low (abFSIdx*2)     ; list of indeces of next sample in wave
+            ldi     YL,         low (abFSIdx*2)     ; list of indices of next sample in wave
             ldi     YH,         high(abFSIdx*2)     ;   -- " --
 
             ldi     r17,        0x02                ; the next address lies "2" further on
             ldi     r18,        0x0C                ; 12 Tunes
     FSIdx:
-            st      Y,          nNULL               ; 0 => anPosFrequencies[n]
-            add     YL,         r17                 ; next address
+            st      Y,          nNULL               ; 0 => abFSIdx[n]
+            add     YL,         r17                 ; next address (n++)
             adc     YH,         nNULL               ;   -- " --
             dec     r18                             ; one done
             brne    FSIdx                           ; more to do?
 
-            sei                                     ; setup is ended, allow generation of interrupts
+            sei                                     ; setup is finished, allow generation of interrupts
 
     wait:
             rjmp wait                               ; wait for ever, interrupt is called as configured
@@ -130,12 +123,13 @@ abFSIdx: .Byte 12                       ; wave sample indices, each element poin
 ; START OF THE INTERRUPT SERVICE ROUTINE
 
     isr_timer0:
-    read_start:
-            ldi     rTemp,      TPBH                ; adjust timer for next interrupt
-            sts     TCNT1H,     rTemp               ; -- " --
-            ldi     rTemp,      TPBL                ; -- " --
-            sts     TCNT1L,     rTemp               ; -- " --
 
+; adjust timer for next interrupt
+
+            ldi     rTemp,      TPBH
+            sts     TCNT1H,     rTemp
+            ldi     rTemp,      TPBL
+            sts     TCNT1L,     rTemp
 
 ; list of sample indices into the wave to Y
 
@@ -170,13 +164,13 @@ abFSIdx: .Byte 12                       ; wave sample indices, each element poin
 
             in      mInputVal,  PINC                ; check whats ON
             and     mInputVal,  mInputBit
-            breq    run                             ; a bit is 0, so we have to act
+            breq    run                             ; a bit is 0, so we have to make a run for it
 
-            add     YL,         nOne                ; the next element of the frequence vector
+            add     YL,         nOne                ; the next element of the frequence vector abFSIdx
             adc     YH,         nNULL
 
-            ldi     rTemp,      64
-            add     ZLsave,     rTemp               ; the next wave
+            ldi     rTemp,      64                  ; the next wave
+            add     ZLsave,     rTemp
             adc     ZHsave,     nNULL
             add     ZLsave,     rTemp
             adc     ZHsave,     nNULL
@@ -191,10 +185,10 @@ abFSIdx: .Byte 12                       ; wave sample indices, each element poin
 
 ; add index of the next sample to wave pointer
 
-            ld      nSmpIx,     Y                   ; anPosFrequencies[0] => register nSmpIx
+            ld      nSmpIx,     Y                   ; abFSIdx[n] => register nSmpIx
             add     ZL,         nSmpIx              ; add nSmpIx to wave pointer &abWaveSet[abFSIdx[n]]
             adc     ZH,         nNULL
-            add     ZL,         nSmpIx              ;   -- " --
+            add     ZL,         nSmpIx              ; again - we have to do it twice (n*2)
             adc     ZH,         nNULL
 
 ; get and check the next sample
@@ -202,32 +196,32 @@ abFSIdx: .Byte 12                       ; wave sample indices, each element poin
     strt1:
             lpm                                     ; load [Z] to r0
             tst     r0                              ; set the flag regarding to the content
-            brne    next1                           ; if not 0, we are done with reading
-
-; end of wave, restart the wave
-
-            mov     ZL,         ZLsave              ; reset Z to start of current wave to restart the wave
-            mov     ZH,         ZHsave              ;   -- " --
-            mov     nSmpIx,     nNULL               ; the sample pointer becomes 0 too
-            rjmp    next2                           ; decrement to prevent increment to modify shift ones to many
+            brne    next1                           ; if not 0, we have the sample
 
             eor     r0,         r0                  ; the assumed sample value is 2 - the average end value
             inc     r0
             inc     r0
 
-; output sample value
+; end of wave, restart the wave
+
+            mov     ZL,         ZLsave              ; reset Z to start of current wave to enable jump to the next wave
+            mov     ZH,         ZHsave              ;   -- " --
+            mov     nSmpIx,     nNULL               ; the sample pointer becomes 0 too to restart the current wave
+            rjmp    next2                           ; we must no increment our nSmpIx, because he is correct now
 
     next1:
             inc     nSmpIx                          ; next time the next sample
     next2:
             st      Y,          nSmpIx              ; write back to abFSIdx
 
- ;           lsr     r0
+; adding the sample to the sum of samples
+
             add     nBitsL,     r0                  ; accumulate all samples of all runs 
             adc     nBitsH,     nNULL
-            sbrs    mInputBit,  0x05                ; the last bit we are allowed to
-            rjmp    read
+            sbrs    mInputBit,  0x05                ; reached the last bit we will read?
+            rjmp    read                            ; no, so we go to the next step
 
+; output sample value
 
 ; D to A converter
 
@@ -273,13 +267,13 @@ abFSIdx: .Byte 12                       ; wave sample indices, each element poin
             breq    end                             ; break if no bits to set anymore
 
             lsl     mOut                            ; shift existing bits
-            ori     mOut,       0x04                ; insert bit 2
+            ori     mOut,       0x04                ; inject bit
             rjmp    for                             ; loop to-for
 
-    end:                                            ; output result
-            out     PORTD,      mOut                ; 
+    end:
+            out     PORTD,      mOut                ; output result
 
-            reti
+            reti                                    ; close the book
 
 
 abWaveSet:
