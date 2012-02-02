@@ -22,6 +22,7 @@ abFSIdx: .Byte 12       ; wave sample indices, each element points to a sample i
 .def ZH         = r31   ; Z high byte
 
 ; names for the registers to help humans to understand
+.def nWaveLen   = r15   ; the length in bytes of a wave
 .def nNULL      = r16   ; a NULL - needed in 'reg > 15' because of the CPU 
 .def rTemp      = r17   ; a temporary register
 .def Zsave      = r18   ; backup to reset address Z                  (word)
@@ -103,7 +104,9 @@ abFSIdx: .Byte 12       ; wave sample indices, each element points to a sample i
 
 ; initialize a register with NULL for later use
 
-            eor     nNULL,      nNULL               ; (r16) the NULL
+            ldi     rTemp,      64                  ; (r17) jump distance to the next wave
+            mov     nWaveLen,   rTemp               ; (r15) set it to register / no ldi for r15
+            clr     nNULL                           ; (r16) the NULL
 
 ; initialize all Frequency-Sample-Indices with "0"
 
@@ -112,8 +115,7 @@ abFSIdx: .Byte 12       ; wave sample indices, each element points to a sample i
 
             ldi     rTemp,      0x0C                ; 12 Tunes
     FSIdx:
-            st      Y,          nNULL               ; 0 => abFSIdx[n]
-            adiw    Y,          1                   ; next address (n++)
+            st      Y+,         nNULL               ; 0 => abFSIdx[n]
             dec     rTemp                           ; one done
             brne    FSIdx                           ; more to do?
 
@@ -155,84 +157,92 @@ abFSIdx: .Byte 12       ; wave sample indices, each element points to a sample i
 
 ; reset output value (sample sum)
 
-            eor     nSampleL,   nSampleL            ; [1]
-            eor     nSampleH,   nSampleH            ; [1]
+            clr     nSampleL                        ; [1] clear sum of sample values
+            clr     nSampleH                        ; [1]
 
 ; start on input pin 0
 
             ldi     mInputBit,  0x01                ; [1] starting the big loop
-            ror     mInputBit                       ; [1] set carry flag
+            ror     mInputBit                       ; [1] set carry flag for first command in loop
 
 ; --------------------------------------------------
-; main loop: read in the input signal status
+; main loop: interprete input signal status
 ; --------------------------------------------------
 
-    read:
+    main:
+
+; prepair input bitmask for next bit to check
+
             rol     mInputBit                       ; [1] the first bit loures in the carry flag
             sbrc    mInputBit,  0x06                ; [1,2] the last bit we are allowed to start a run
-            rjmp    output                          ; [2]
+            rjmp    output                          ; [2] all bits tested, now output the result
 
-            in      mInputVal,  PINC                ; [1] check whats ON
-            and     mInputVal,  mInputBit           ; [1]
+; if key pressed, add sample
+
+            ld      nSmpIx,     Y                   ; [1] abFSIdx[n] => register nSmpIx
+            in      mInputVal,  PINC                ; [1] get input signals
+            and     mInputVal,  mInputBit           ; [1] check if current bit is ON
             breq    run                             ; [1,2] a bit is 0, so we have to make a run for it
 
-            adiw    Y,          1                   ; [2] the next element of the frequence vector abFSIdx
+; if wave not finalized, play it anyway
 
-            ldi     rTemp,      64                  ; [1] the next wave
-            add     ZLsave,     rTemp               ; [1]
+            tst     nSmpIx                          ; [1]
+            breq    run                             ; [1,2]
+
+    next_wave:
+
+            adiw    Y,          1                   ; [2] the next element of the sample index vector
+
+            add     ZLsave,     nWaveLen            ; [1] calculate the address of the next wave
             adc     ZHsave,     nNULL               ; [1]
 
-            rjmp    read                            ; [2] check the next pin/key
+            rjmp    main                            ; [2] check the next pin/key
 
 ; add the current sample value of the current wave
 ; to the sum of current sample values
 
     run:
 
-; load start address of the next wave
+; calculate address of current sample in current wave
 
-            movw    Z,          Zsave               ; [1] sometimes we need the start again later on
-
-; add index of current 'sample in wave' pointer
-
-            ld      nSmpIx,     Y                   ; [1] abFSIdx[n] => register nSmpIx
+            movw    Z,          Zsave               ; [1] load the current wave pointer
             add     ZL,         nSmpIx              ; [1] add nSmpIx to wave pointer &abWaveSet[abFSIdx[n]]
             adc     ZH,         nNULL               ; [1]
 
-; get and check the next sample
+; get and check current sample sample
 
-    strt1:
-            lpm                                     ; [3] load [Z] to r0 ( 'ld Z,r' does not work! )
-            tst     r0                              ; [1] set the flag regarding to the content
-            brne    next1                           ; [1,2] if not 0, we have the sample
+            lpm     rTemp,      Z                   ; [3] load [Z] from CSEG to register
+            tst     rTemp                           ; [1] set the flag regarding to the content
+            brne    next                            ; [1,2] if not 0, we have a sample
 
-            eor     r0,         r0                  ; [1] the assumed sample value is 2 - the average end value
-            inc     r0                              ; [1]
-            inc     r0                              ; [1]
+; end of wave, no immediate value present
+
+            ldi     rTemp,      0x02                ; [1] the assumed sample value is 2 = the average end value
 
 ; end of wave, restart the wave
 
-            movw    Z,          Zsave               ; [1] reset Z to start of current wave to enable jump to the next wave
+;?????      movw    Z,          Zsave               ; [1] reset Z to start of current wave to enable jump to the next wave
 
-            mov     nSmpIx,     nNULL               ; [1] the sample pointer becomes 0 too to restart the current wave
-            rjmp    next2                           ; [2] we must no increment our nSmpIx, because it is already correct
+            clr     nSmpIx                          ; [1] the sample pointer becomes 0 too to restart the current wave
+            rjmp    next_wo_inc                     ; [2] we must no increment our nSmpIx, because it is already correct
 
 ; make address of next 'sample in wave' pointer
 
-    next1:
+    next:
             inc     nSmpIx                          ; [1] next time the next sample
-    next2:
+
+    next_wo_inc:
             st      Y,          nSmpIx              ; [2] write back to abFSIdx
 
 ; adding the sample to the sum of samples
 
-            add     nSampleL,   r0                  ; [1] accumulate all samples of all runs 
+            add     nSampleL,   rTemp               ; [1] accumulate all samples of all runs 
             adc     nSampleH,   nNULL               ; [1]
 
 ; test if all keys were checked
 
             sbrs    mInputBit,  0x05                ; [1,2] reached the last bit we will read?
-            rjmp    read                            ; [2] no, so we go to the next step
+            rjmp    next_wave                       ; [2] no, so we go to the next step
 
 ; output sample value
 
