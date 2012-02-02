@@ -1,0 +1,39 @@
+isr_timer => main   :  20
+main => start_query :   6
+
+
+start_query => run1 :   4  ; wave incomplete
+start_query => run2 :  +6  ; high switch
+start_query => run2 :  +7  ; low switch
+
+start_query => runX :  +2  ; no run
+
+next_wave           :   6
+
+run_a               :  14  ; inside wave
+run_b               :  15  ; end of wave
+
+close               :   7  ; query+jump+reti
+
+
+n  = amount of simultanious tones
+c  = cycles
+48 = expected intermediate length of tones in bytes
+
+c = 20 + n*( 6 + 4 + 7/48 + 6 + 15 + 1/48 ) + 7
+
+c = 27 + n*( 31 + 8/48 )
+c = 27 + n*( 31.1667 )
+
+c - 27 = n * 31.2 
+
+( c - 27 ) / 31.2 = n
+
+20.000.000 Hz / 33488 Hz = 597 cycles ( per sample periode )
+16.000.000 Hz / 33488 Hz = 477 cycles ( per sample periode )
+
+( 597 - 27 ) / 31.2 = n
+
+570 / 31.2 = n
+
+n = 18.2
