@@ -135,10 +135,20 @@ abFSIdx: .Byte 12       ; wave sample indices, each element points to a sample i
 
 ; (re)adjust timer for next interrupt
 
-            ldi     rTemp,      TPBH                ; [1]
-            sts     TCNT1H,     rTemp               ; [2]
-            ldi     rTemp,      TPBL                ; [1]
-            sts     TCNT1L,     rTemp               ; [2]
+            ldi     rTemp,      TPBH                ; [1] first the high byte to miminize random impact
+            sts     TCNT1H,     rTemp               ; [2] by overflow of low byte (we cant be sure which
+            ldi     rTemp,      TPBL                ; [1] value low byte becomes, but the interrupt timer
+            sts     TCNT1L,     rTemp               ; [2] 00:00 while entering the service routine)
+
+; output of last sum of samples
+
+            out     PORTD,      nSampleL            ; [1] output result of last operation to output ports
+            out     PORTB,      nSampleH            ; [1] here to guarantee contant timing of output signal
+
+; reset output value
+
+            clr     nSampleL                        ; [1] clear sum of sample values before start of any
+            clr     nSampleH                        ; [1] other action for summing up the a samples sum
 
 ; --------------------------------------------------
 ; initial address calculation
@@ -147,18 +157,13 @@ abFSIdx: .Byte 12       ; wave sample indices, each element points to a sample i
 ; list of sample indices into the wave to Y
 
             ldi     YL,         low (abFSIdx*2)     ; [1] load Y to point to the start sample index array
-            ldi     YH,         high(abFSIdx*2)     ; [1]
+            ldi     YH,         high(abFSIdx*2)     ; [1] 
 
-; start pointer of the wave to Z and to copy registers
+; start pointer wave to Z and copy to save registers
 
             ldi     ZL,         low (abWaveSet*2)   ; [1] load Z to point to start of 2D wave matrix
             ldi     ZH,         high(abWaveSet*2)   ; [1]
-            movw    Zsave,      Z                   ; [1] sometimes we need the startpoint again later on
-
-; reset output value (sample sum)
-
-            clr     nSampleL                        ; [1] clear sum of sample values
-            clr     nSampleH                        ; [1]
+            movw    Zsave,      Z                   ; [1] each round we need the startpoint again
 
 ; start on input pin 0
 
@@ -175,7 +180,7 @@ abFSIdx: .Byte 12       ; wave sample indices, each element points to a sample i
 
             rol     mInputBit                       ; [1] the first bit loures in the carry flag
             sbrc    mInputBit,  0x06                ; [1,2] the last bit we are allowed to start a run
-            rjmp    output                          ; [2] all bits tested, now output the result
+            rjmp    isr_end                         ; [2] all bits tested, end of ISR
 
 ; if key pressed, add sample
 
@@ -221,8 +226,6 @@ abFSIdx: .Byte 12       ; wave sample indices, each element points to a sample i
 
 ; end of wave, restart the wave
 
-;?????      movw    Z,          Zsave               ; [1] reset Z to start of current wave to enable jump to the next wave
-
             clr     nSmpIx                          ; [1] the sample pointer becomes 0 too to restart the current wave
             rjmp    next_wo_inc                     ; [2] we must no increment our nSmpIx, because it is already correct
 
@@ -250,14 +253,12 @@ abFSIdx: .Byte 12       ; wave sample indices, each element points to a sample i
 ; if we are using an external D/A converter
 ; this is 12 bit (0 to 4096) resolution
 
-    output:
-            out     PORTD,      nSampleL            ; [1] output result
-            out     PORTB,      nSampleH            ; [1]
+    isr_end:
             reti                                    ; [4] close the book
 
 
 abWaveSet:
-;	little endian interal waves
+;	little endian waves
 ;    === ===============================================================================================================================================================================================================================
 C:   .dw 0x0301,0x0905,0x130D,0x221A,0x342B,0x4A3F,0x6155,0x7A6D,0x9386,0xAB9F,0xC1B6,0xD5CC,0xE6DE,0xF3ED,0xFBF7,0xFFFD,0xFDFF,0xF7FB,0xEDF3,0xDEE6,0xCCD5,0xB6C1,0x9FAB,0x8693,0x6D7A,0x5561,0x3F4A,0x2B34,0x1A22,0x0D13,0x0509,0x0003
 CIS: .dw 0x0301,0x0905,0x150F,0x261D,0x3A30,0x5246,0x6B5E,0x8578,0x9F92,0xB8AC,0xCEC4,0xE1D8,0xF0E9,0xFAF6,0xFEFD,0xFEFF,0xF7FB,0xECF2,0xDCE5,0xC8D2,0xB1BD,0x98A4,0x7D8B,0x6370,0x4A57,0x343F,0x212A,0x1118,0x070C,0x0004,0x0000,0x0000
