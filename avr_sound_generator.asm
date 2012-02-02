@@ -244,16 +244,17 @@ abFSIdx: .Byte 12                       ; wave sample indices, each element poin
 ; D-to-A-Converter
 ; --------------------------------------------------
 
-; divide by 32 to scale down into a 0 to 6 range (38 would be better)
+    dac:                                            ; Digital to Analog converter
 
-; we expect maximum value of lower than 255*12=3060 if we are using
-; an external D/A converter
-
+; we expect maximum value of lower than 255*12=3060
+; if we are using an external D/A converter
+;
 ; for development we use direct D to A conversion
 ; With direct D to A convertion we are able to output
 ; 12 bits. So we have to scale the maximum expected
 ; amount of simultanious tones to a maximum amplitude
 ; of 12 bits!
+;
 ; tones  reverse division     divisor  bits    offset
 ;  1      255 / 12 =  21.25     32      7.97    16
 ;  2      510 / 12 =  42.50     64      7.97    32
@@ -261,15 +262,27 @@ abFSIdx: .Byte 12                       ; wave sample indices, each element poin
 ;  4     1020 / 12 =  85.00    128      7.97    64
 ;  5     1275 / 12 = 106.25    128      9.96    64
 ;  6     1530 / 12 = 127.50    128     11.95    64
+;
+; offset should be added to the sum to smooth the
+; "direct DAC" result over
 
-    dac:                                            ; Digital to Analog converter
+; add offset to smooth the result
+;            ldi     r26,        16                  ; up to 1 tones
+            ldi     r26,        32                  ; up to 3 tones
+;            ldi     r26,        64                  ; up to 6 tones
+            add     nBitsL,     r26
+            adc     nBitsH,     nNULL
+; jump to matching divisor
+;            rjmp    dby032                          ; up to 1 tone
+            rjmp    dby064                          ; up to 3 tone
 
-    dby128:                                         ; 4 to 6 tones
+
+    dby128:                                         ; up to 6 tones
             lsr     nBitsL                          ; /128
             sbrc    nBitsH,     0
             ori     nBitsL,     0x80
             lsr     nBitsH
-    dby064:                                         ; 2 to 3 tones
+    dby064:                                         ; up to 3 tones
             lsr     nBitsL                          ; /64
             sbrc    nBitsH,     0
             ori     nBitsL,     0x80
@@ -280,11 +293,7 @@ abFSIdx: .Byte 12                       ; wave sample indices, each element poin
             ori     nBitsL,     0x80
             lsr     nBitsH
     dby016:
-            lsr     nBitsL                          ; /16
-            sbrc    nBitsH,     0
-            ori     nBitsL,     0x80
-            lsr     nBitsH
-
+            lsr     nBits                           ; /16
             lsr     nBits                           ; /8
             lsr     nBits                           ; /4
             lsr     nBits                           ; /2
